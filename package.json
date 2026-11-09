@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Family savings ledger for kids: balances, weekly allowance, and parent-paid interest on Firebase.",
   "scripts": {
-    "test": "npm --prefix functions test",
+    "test": "npm --prefix functions test && node --test test/csv.test.mjs",
     "test:e2e": "firebase emulators:exec --only auth,firestore,functions --project demo-passbook \"node test/e2e.mjs\"",
     "dev": "firebase emulators:start --project demo-passbook",
     "deploy": "firebase deploy"
