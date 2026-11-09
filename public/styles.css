@@ -269,3 +269,90 @@ dialog::backdrop {
 @media (prefers-reduced-motion: reduce) {
   #toast { transition: none; }
 }
+
+/* ---------- quick-pick chips ---------- */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: -0.25rem 0 1rem;
+}
+.chip {
+  min-height: 2.5rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  border: 2px solid var(--rule);
+  font-weight: 600;
+}
+.chip:hover { border-color: var(--cover); }
+.chip[aria-pressed="true"] { border-color: var(--cover); background: color-mix(in srgb, var(--cover) 12%, transparent); }
+.chip-big { min-height: 3rem; padding: 0.5rem 1rem; }
+.hint-block { font-size: 0.9rem; color: var(--muted); margin: 0 0 0.4rem; }
+
+.input-row { display: flex; gap: 0.5rem; align-items: stretch; }
+.input-row input { flex: 1; min-width: 0; }
+
+/* ---------- getting started ---------- */
+.steps ol { margin: 0.5rem 0 0.75rem; padding-left: 1.25rem; }
+.steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.steps li.done { color: var(--muted); }
+.steps .tick { color: var(--credit); font-weight: 800; }
+
+.total { margin-top: 1rem; }
+
+/* ---------- grouped controls ---------- */
+fieldset.checks, fieldset.presets {
+  border: 0;
+  padding: 0;
+  margin: 0 0 1rem;
+  min-width: 0;
+}
+fieldset legend { font-weight: 650; margin-bottom: 0.4rem; padding: 0; }
+fieldset .hint { display: block; font-weight: 400; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--cover); }
+
+.chore-list { list-style: none; margin: 0 0 0.5rem; padding: 0; }
+.chore-row {
+  display: grid;
+  grid-template-columns: 1fr 6rem auto;
+  gap: 0.5rem;
+  align-items: end;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 0.5rem;
+}
+.chore-row label { margin: 0; }
+@media (max-width: 30rem) {
+  .chore-row { grid-template-columns: 1fr 5rem; }
+  .chore-row button { grid-column: 1 / -1; }
+}
+
+details.notify { margin: 0.5rem 0 1rem; }
+details.notify summary { cursor: pointer; font-weight: 650; padding: 0.4rem 0; }
+
+.share-link { overflow-wrap: anywhere; font-family: ui-monospace, monospace; user-select: all; }
+
+.visually-hidden {
+  position: absolute;
+  clip-path: inset(50%);
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  white-space: nowrap;
+}
+.presets .check { align-items: flex-start; margin-bottom: 0.6rem; }
+.presets .check input { margin-top: 0.2rem; }
+.check .hint { display: block; font-weight: 400; color: var(--muted); font-size: 0.9rem; }

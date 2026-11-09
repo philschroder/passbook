@@ -12,6 +12,8 @@ function localDateParts(date, timeZone) {
       month: "2-digit",
       day: "2-digit",
       weekday: "short",
+      hour: "2-digit",
+      hourCycle: "h23",
     })
       .formatToParts(date)
       .map((p) => [p.type, p.value])
@@ -21,7 +23,19 @@ function localDateParts(date, timeZone) {
     ym: `${parts.year}-${parts.month}`,
     day: Number(parts.day),
     weekday: WEEKDAYS.indexOf(parts.weekday),
+    hour: Number(parts.hour),
   };
+}
+
+/** True if `tz` is an IANA time zone this runtime understands. */
+function isValidTimeZone(tz) {
+  if (typeof tz !== "string" || !tz || tz.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -75,6 +89,50 @@ function checkRate(rate) {
   return Math.round(rate * 100) / 100;
 }
 
+const MAX_CHORES = 20;
+
+/**
+ * Validates a parent's chore list: [{ id?, name, amountCents }]. Returns a clean list with
+ * stable ids (existing ids are kept so kids' open requests still make sense).
+ */
+function checkChores(list) {
+  if (!Array.isArray(list)) throw "Chores must be a list.";
+  if (list.length > MAX_CHORES) throw `Keep it to ${MAX_CHORES} chores or fewer.`;
+  const seen = new Set();
+  return list.map((c, i) => {
+    const name = cleanText(c?.name, 40);
+    if (!name) throw `Chore ${i + 1} needs a name.`;
+    const amountCents = checkCents(c?.amountCents);
+    let id = typeof c?.id === "string" && /^[a-z0-9]{1,12}$/.test(c.id) ? c.id : "";
+    if (!id || seen.has(id)) {
+      do id = Math.random().toString(36).slice(2, 10); while (seen.has(id));
+    }
+    seen.add(id);
+    return { id, name, amountCents };
+  });
+}
+
+/**
+ * Validates a notification webhook URL (Zapier, Make, IFTTT...). Empty string clears it.
+ * Must be https; plain http is allowed only for localhost so the emulator tests can use it.
+ */
+function checkWebhookUrl(value, { allowLocalHttp = false } = {}) {
+  if (value === "" || value === null || value === undefined) return "";
+  if (typeof value !== "string" || value.length > 500) throw "That doesn't look like a web address.";
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw "That doesn't look like a web address.";
+  }
+  const local = ["localhost", "127.0.0.1"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(allowLocalHttp && local && url.protocol === "http:")) {
+    throw "The address must start with https://";
+  }
+  if (url.username || url.password) throw "Remove the username and password from the address.";
+  return url.toString();
+}
+
 function cleanText(value, maxLen) {
   if (typeof value !== "string") return "";
   return value.replace(/\s+/g, " ").trim().slice(0, maxLen);
@@ -83,7 +141,11 @@ function cleanText(value, maxLen) {
 module.exports = {
   WEEKDAYS,
   MAX_CENTS,
+  MAX_CHORES,
   localDateParts,
+  isValidTimeZone,
+  checkChores,
+  checkWebhookUrl,
   interestPeriodKey,
   computeInterest,
   isAllowanceDue,

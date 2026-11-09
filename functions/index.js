@@ -2,6 +2,7 @@
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
@@ -12,8 +13,11 @@ const core = require("./lib/core");
 initializeApp();
 const db = getFirestore();
 
-// Set FAMILY_TIMEZONE in functions/.env (IANA name). Used for the daily job and weekday math.
+// Each family stores its own time zone (detected from the parent's browser at signup).
+// FAMILY_TIMEZONE is only the fallback for families created before that existed.
 const TZ = process.env.FAMILY_TIMEZONE || "America/New_York";
+const IS_EMULATOR = process.env.FUNCTIONS_EMULATOR === "true";
+const PAYOUT_HOUR = 6; // local time; the hourly job pays the first run at or after this hour
 const MAX_PIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
 const MAX_PENDING_REQUESTS = 10;
@@ -54,6 +58,19 @@ function requireKid(req) {
 
 const kidRef = (fid, kidId) => db.doc(`families/${fid}/kids/${kidId}`);
 const secretRef = (fid, kidId) => db.doc(`families/${fid}/kidSecrets/${kidId}`);
+// Parent-only settings that kids must not see (rules: parent read, no writes).
+const privateRef = (fid) => db.doc(`families/${fid}/private/settings`);
+
+const familyTz = (f) => (core.isValidTimeZone(f?.timeZone) ? f.timeZone : TZ);
+
+/** "Now", or a fixed instant passed by the e2e test (emulator only) so date math is testable. */
+function nowFor(req) {
+  if (IS_EMULATOR && req?.data?.asOf) {
+    const d = new Date(req.data.asOf);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return new Date();
+}
 
 function hashPin(pin) {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -106,6 +123,7 @@ exports.createFamily = callable(async (req) => {
   if (req.auth.token.familyId) throw new HttpsError("already-exists", "You already have a family.");
 
   const name = core.cleanText(req.data?.name, 40) || "Our family";
+  const timeZone = core.isValidTimeZone(req.data?.timeZone) ? req.data.timeZone : TZ;
   const familyRef = db.collection("families").doc();
 
   let code;
@@ -127,7 +145,8 @@ exports.createFamily = callable(async (req) => {
     interestRatePct: 0,
     interestPeriod: "monthly",
     interestCapCents: 0,
-    timeZone: TZ,
+    chores: [],
+    timeZone,
     createdAt: FieldValue.serverTimestamp(),
   });
   await getAuth().setCustomUserClaims(uid, { role: "parent", familyId: familyRef.id });
@@ -145,7 +164,41 @@ exports.updateSettings = callable(async (req) => {
     update.interestPeriod = d.interestPeriod;
   }
   if (d.interestCapCents !== undefined) update.interestCapCents = core.checkCents(d.interestCapCents, { allowZero: true });
-  await db.doc(`families/${fid}`).update(update);
+  if (d.timeZone !== undefined) {
+    if (!core.isValidTimeZone(d.timeZone)) throw "Pick a time zone from the list.";
+    update.timeZone = d.timeZone;
+  }
+  if (d.chores !== undefined) update.chores = core.checkChores(d.chores);
+
+  const batch = db.batch();
+  if (Object.keys(update).length) batch.update(db.doc(`families/${fid}`), update);
+  if (d.webhookUrl !== undefined) {
+    batch.set(privateRef(fid), { webhookUrl: core.checkWebhookUrl(d.webhookUrl, { allowLocalHttp: IS_EMULATOR }) }, { merge: true });
+  }
+  await batch.commit();
+  return { ok: true };
+});
+
+/** Sends a sample event to the family's webhook so parents can map fields in Zapier/Make. */
+exports.testWebhook = callable(async (req) => {
+  const fid = requireParent(req);
+  const url = (await privateRef(fid).get()).data()?.webhookUrl;
+  if (!url) throw new HttpsError("failed-precondition", "Save a notification address first.");
+  const fam = (await db.doc(`families/${fid}`).get()).data();
+  const ok = await sendWebhook(url, {
+    event: "test",
+    family: fam.name,
+    saver: "Sample Saver",
+    summary: `Test from ${fam.name}'s Passbook. If you can read this, notifications work.`,
+    kind: "deposit",
+    amount: "5.00",
+    amountCents: 500,
+    balance: "25.00",
+    balanceCents: 2500,
+    memo: "Sample entry",
+    at: new Date().toISOString(),
+  });
+  if (!ok) throw new HttpsError("unavailable", "The address didn't accept the test. Check it and try again.");
   return { ok: true };
 });
 
@@ -206,25 +259,34 @@ exports.updateKid = callable(async (req) => {
   return { ok: true };
 });
 
+/**
+ * Parent adds or takes out money. Pass kidId for one saver or kidIds for several at once
+ * ("give everyone $5"); a multi-kid entry is all-or-nothing.
+ */
 exports.postEntry = callable(async (req) => {
   const fid = requireParent(req);
   const d = req.data || {};
   if (!["deposit", "withdrawal"].includes(d.kind)) throw "Choose deposit or withdrawal.";
   const amount = core.checkCents(d.amountCents);
   const memo = core.cleanText(d.memo, 80);
-  const ref = kidRef(fid, String(d.kidId || ""));
+  const ids = [...new Set((Array.isArray(d.kidIds) ? d.kidIds : [d.kidId]).map((x) => String(x || "")))];
+  if (!ids.length || ids.some((x) => !x)) throw "Pick at least one saver.";
+  if (ids.length > 50) throw "That's too many savers at once.";
+  const refs = ids.map((id) => kidRef(fid, id));
 
   await db.runTransaction(async (t) => {
-    const snap = await t.get(ref);
-    if (!snap.exists) throw new HttpsError("not-found", "Kid not found.");
-    writeEntry(t, ref, snap.data(), {
-      type: d.kind,
-      delta: d.kind === "deposit" ? amount : -amount,
-      memo,
-      by: "parent",
+    const snaps = await t.getAll(...refs);
+    if (snaps.some((s) => !s.exists)) throw new HttpsError("not-found", "Kid not found.");
+    snaps.forEach((snap, i) => {
+      writeEntry(t, refs[i], snap.data(), {
+        type: d.kind,
+        delta: d.kind === "deposit" ? amount : -amount,
+        memo,
+        by: "parent",
+      });
     });
   });
-  return { ok: true };
+  return { ok: true, count: ids.length };
 });
 
 exports.resolveRequest = callable(async (req) => {
@@ -323,13 +385,28 @@ exports.kidLogin = callable(async (req) => {
 exports.createRequest = callable(async (req) => {
   const { familyId, kidId } = requireKid(req);
   const d = req.data || {};
-  if (!["deposit", "withdrawal"].includes(d.kind)) throw "Choose add or spend.";
-  const amountCents = core.checkCents(d.amountCents);
-  const memo = core.cleanText(d.memo, 80);
-  if (!memo) throw "Say what it's for.";
 
   const kSnap = await kidRef(familyId, kidId).get();
   if (!kSnap.exists) throw new HttpsError("not-found", "Kid not found.");
+
+  // A chore request takes its amount and name from the parent's chore list, so kids just tap.
+  let kind, amountCents, memo, choreId = null;
+  if (d.choreId) {
+    const fam = (await db.doc(`families/${familyId}`).get()).data();
+    const chore = (fam?.chores || []).find((c) => c.id === d.choreId);
+    if (!chore) throw new HttpsError("not-found", "That chore isn't on the list anymore.");
+    kind = "deposit";
+    amountCents = chore.amountCents;
+    memo = `Chore: ${chore.name}`;
+    choreId = chore.id;
+  } else {
+    if (!["deposit", "withdrawal"].includes(d.kind)) throw "Choose add or spend.";
+    kind = d.kind;
+    amountCents = core.checkCents(d.amountCents);
+    memo = core.cleanText(d.memo, 80);
+    if (!memo) throw "Say what it's for.";
+  }
+
   const requests = db.collection(`families/${familyId}/requests`);
   const pending = await requests.where("kidId", "==", kidId).where("status", "==", "pending").count().get();
   if (pending.data().count >= MAX_PENDING_REQUESTS) {
@@ -339,9 +416,10 @@ exports.createRequest = callable(async (req) => {
   await requests.add({
     kidId,
     kidName: kSnap.data().name,
-    kind: d.kind,
+    kind,
     amountCents,
     memo,
+    choreId,
     status: "pending",
     createdAt: FieldValue.serverTimestamp(),
   });
@@ -378,11 +456,16 @@ exports.setGoal = callable(async (req) => {
 /** Pays any interest and allowance due today for one family. Safe to run repeatedly. */
 async function processFamily(famDoc, parts) {
   const f = famDoc.data();
+  if (!f) return 0;
   const interestKey = core.interestPeriodKey(f.interestPeriod, parts);
   const kids = await famDoc.ref.collection("kids").where("archived", "==", false).get();
   let payouts = 0;
 
   for (const kidDoc of kids.docs) {
+    // Cheap pre-check so the hourly job doesn't open a transaction for kids with nothing due.
+    const k0 = kidDoc.data();
+    const interestDue = interestKey && f.interestRatePct > 0 && k0.lastInterestKey !== interestKey;
+    if (!interestDue && !core.isAllowanceDue(k0, parts)) continue;
     await db.runTransaction(async (t) => {
       const snap = await t.get(kidDoc.ref);
       const kid = snap.data();
@@ -417,18 +500,104 @@ async function processFamily(famDoc, parts) {
   return payouts;
 }
 
-exports.dailyPayouts = onSchedule({ schedule: "5 6 * * *", timeZone: TZ }, async () => {
-  const parts = core.localDateParts(new Date(), TZ);
+/**
+ * Runs every hour. Each family is paid on the first run at or after 6 AM in its own time zone;
+ * the per-kid stamps make every later run that day a no-op.
+ */
+exports.dailyPayouts = onSchedule({ schedule: "5 * * * *", timeZone: "UTC" }, async () => {
+  const now = new Date();
   const families = await db.collection("families").get();
   let total = 0;
-  for (const fam of families.docs) total += await processFamily(fam, parts);
-  console.log(`dailyPayouts ${parts.ymd}: ${total} entries across ${families.size} families`);
+  for (const fam of families.docs) {
+    const parts = core.localDateParts(now, familyTz(fam.data()));
+    if (parts.hour < PAYOUT_HOUR) continue;
+    try {
+      total += await processFamily(fam, parts);
+    } catch (err) {
+      console.error(`payouts failed for family ${fam.id}`, err); // don't let one family block the rest
+    }
+  }
+  console.log(`dailyPayouts ${now.toISOString()}: ${total} entries across ${families.size} families`);
 });
 
-/** Parent-triggered run of today's payouts for their family (idempotent; handy for testing). */
+/** Parent-triggered run of today's payouts for their family (idempotent; ignores the 6 AM hour). */
 exports.runPayoutsNow = callable(async (req) => {
   const fid = requireParent(req);
-  const parts = core.localDateParts(new Date(), TZ);
-  const payouts = await processFamily(await db.doc(`families/${fid}`).get(), parts);
+  const famDoc = await db.doc(`families/${fid}`).get();
+  const parts = core.localDateParts(nowFor(req), familyTz(famDoc.data()));
+  const payouts = await processFamily(famDoc, parts);
   return { payouts, date: parts.ymd };
+});
+
+// ---------- notifications (webhook to Zapier, Make, IFTTT, ...) ----------
+
+/** POSTs a flat JSON payload. Never throws; returns true on a 2xx. */
+async function sendWebhook(url, payload) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn("webhook failed", err.message);
+    return false;
+  }
+}
+
+const dollars = (cents) => (cents / 100).toFixed(2);
+
+async function notify(fid, build) {
+  const url = (await privateRef(fid).get()).data()?.webhookUrl;
+  if (!url) return;
+  const fam = (await db.doc(`families/${fid}`).get()).data();
+  if (!fam) return;
+  await sendWebhook(url, { family: fam.name, at: new Date().toISOString(), ...(await build(fam)) });
+}
+
+const TYPE_WORDS = { deposit: "added", withdrawal: "took out", allowance: "allowance", interest: "interest" };
+
+exports.notifyOnRequest = onDocumentCreated("families/{fid}/requests/{reqId}", async (event) => {
+  const r = event.data?.data();
+  if (!r) return;
+  await notify(event.params.fid, async () => {
+    const kid = (await kidRef(event.params.fid, r.kidId).get()).data();
+    const verb = r.kind === "deposit" ? "add" : "spend";
+    return {
+      event: "request.created",
+      saver: r.kidName,
+      summary: `${r.kidName} wants to ${verb} $${dollars(r.amountCents)}: ${r.memo}. Open Passbook to approve.`,
+      kind: r.kind,
+      amount: dollars(r.amountCents),
+      amountCents: r.amountCents,
+      balance: dollars(kid?.balanceCents || 0),
+      balanceCents: kid?.balanceCents || 0,
+      memo: r.memo,
+      requestId: event.params.reqId,
+    };
+  });
+});
+
+exports.notifyOnEntry = onDocumentCreated("families/{fid}/kids/{kidId}/transactions/{txId}", async (event) => {
+  const tx = event.data?.data();
+  if (!tx) return;
+  await notify(event.params.fid, async () => {
+    const kid = (await kidRef(event.params.fid, event.params.kidId).get()).data();
+    const name = kid?.name || "A saver";
+    const sign = tx.amountCents < 0 ? "-" : "+";
+    return {
+      event: "entry.posted",
+      saver: name,
+      summary: `${name}: ${sign}$${dollars(Math.abs(tx.amountCents))} ${TYPE_WORDS[tx.type] || tx.type}${tx.memo ? ` (${tx.memo})` : ""}. Balance $${dollars(tx.balanceAfterCents)}.`,
+      kind: tx.type,
+      amount: dollars(Math.abs(tx.amountCents)),
+      amountCents: tx.amountCents,
+      balance: dollars(tx.balanceAfterCents),
+      balanceCents: tx.balanceAfterCents,
+      memo: tx.memo || "",
+      by: tx.by,
+    };
+  });
 });

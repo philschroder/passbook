@@ -26,6 +26,11 @@ service cloud.firestore {
         allow read: if isParent(fid) || isKid(fid, resource.data.kidId);
       }
 
+      // Parent-only settings (the notification webhook address). Kids can't see it.
+      match /private/{docId} {
+        allow read: if isParent(fid);
+      }
+
       // kidSecrets (PIN hashes) intentionally has no rule: no client access at all.
     }
 
