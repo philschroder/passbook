@@ -112,6 +112,8 @@ npm test           # unit tests for lib/core.js and the CSV export
 npm run test:e2e   # full flow against the emulators
 ```
 
+GitHub Actions (`.github/workflows/test.yml`) runs the unit tests and the emulator e2e test on every pull request and every push to `main`.
+
 On `localhost` the web app connects to the emulators automatically, and the Hosting emulator serves the config. The e2e test pins "today" with an `asOf` value (accepted only by the emulator), so it passes on any day of the week.
 
 ## Known limits and roadmap
