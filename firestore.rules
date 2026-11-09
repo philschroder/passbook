@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// Clients only ever read. Every write goes through Cloud Functions (Admin SDK bypasses rules),
+// so balances can't be edited from the browser.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function inFamily(fid) { return signedIn() && request.auth.token.familyId == fid; }
+    function isParent(fid) { return inFamily(fid) && request.auth.token.role == 'parent'; }
+    function isKid(fid, kidId) {
+      return inFamily(fid) && request.auth.token.role == 'kid' && request.auth.token.kidId == kidId;
+    }
+
+    match /families/{fid} {
+      allow read: if inFamily(fid);
+
+      match /kids/{kidId} {
+        allow read: if isParent(fid) || isKid(fid, kidId);
+
+        match /transactions/{txId} {
+          allow read: if isParent(fid) || isKid(fid, kidId);
+        }
+      }
+
+      match /requests/{reqId} {
+        allow read: if isParent(fid) || isKid(fid, resource.data.kidId);
+      }
+
+      // kidSecrets (PIN hashes) intentionally has no rule: no client access at all.
+    }
+
+    match /{document=**} {
+      allow write: if false;
+    }
+  }
+}
