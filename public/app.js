@@ -10,6 +10,7 @@ import {
   getFunctions, httpsCallable, connectFunctionsEmulator,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js";
 import { toCsv, downloadCsv } from "./csv.js";
+import { THEMES, PATTERNS, AVATARS, STICKERS, MAX_STICKERS, themeById, lookFor } from "./looks.js";
 
 /**
  * Firebase Hosting serves this project's web config at /__/firebase/init.json, so no one has to
@@ -231,18 +232,19 @@ $sheet.addEventListener("close", () => {
 
 function ledgerHtml(txs) {
   if (!txs.length) return `<div class="ledger-wrap"><p class="empty">No entries yet. The first deposit shows up here.</p></div>`;
+  // On narrow screens CSS turns each row into a small card (see .ledger in styles.css).
   const stampFor = { allowance: "ALLOW", interest: "INT" };
   const rows = txs.map((t) => {
     const inflow = t.amountCents >= 0;
     const stamp = stampFor[t.type] ? `<span class="stamp">${stampFor[t.type]}</span>` : "";
     return `<tr>
-      <td>${esc(fmtDate(t.createdAt))}</td>
+      <td class="date">${esc(fmtDate(t.createdAt))}</td>
       <td class="memo">${esc(t.memo || t.type)}${stamp}</td>
-      <td class="num ${inflow ? "in" : "out"}">${inflow ? "+" : "−"}${money(Math.abs(t.amountCents))}</td>
-      <td class="num">${money(t.balanceAfterCents)}</td>
+      <td class="num amt ${inflow ? "in" : "out"}">${inflow ? "+" : "−"}${money(Math.abs(t.amountCents))}</td>
+      <td class="num bal">${money(t.balanceAfterCents)}</td>
     </tr>`;
   }).join("");
-  return `<div class="ledger-wrap"><table class="ledger">
+  return `<div class="ledger-wrap" role="region" aria-label="Passbook entries" tabindex="0"><table class="ledger">
     <thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col" class="num">In / out</th><th scope="col" class="num">Balance</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
@@ -250,8 +252,9 @@ function ledgerHtml(txs) {
 function goalHtml(kid) {
   if (!kid.goal) return "";
   const pct = Math.min(100, Math.round((kid.balanceCents / kid.goal.amountCents) * 100));
-  return `<div class="goal">
-    <div>Saving for <strong>${esc(kid.goal.name)}</strong>: ${money(kid.balanceCents)} of ${money(kid.goal.amountCents)}</div>
+  const reached = kid.balanceCents >= kid.goal.amountCents;
+  return `<div class="goal${reached ? " reached" : ""}">
+    <div>${reached ? `<strong>🎉 Goal reached!</strong> You saved enough for <strong>${esc(kid.goal.name)}</strong>.` : `Saving for <strong>${esc(kid.goal.name)}</strong>: ${money(kid.balanceCents)} of ${money(kid.goal.amountCents)}`}</div>
     <div class="goal-bar" role="progressbar" aria-label="Goal progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
   </div>`;
 }
@@ -278,6 +281,7 @@ async function route(user, forceRefresh = false) {
   clearSubs();
   if ($sheet.open) $sheet.close();
   $header.innerHTML = "";
+  applyLook(null);
   if (!user) return showLanding();
   const { claims } = await user.getIdTokenResult(forceRefresh);
   if (claims.role === "kid") return showKid(claims.familyId, claims.kidId);
@@ -377,7 +381,7 @@ function showLanding() {
 function showPinStep(step, code, kids) {
   step.innerHTML = `
     <p>Who's saving?</p>
-    <div class="kid-picks">${kids.map((k) => `<button type="button" class="btn-quiet" data-kid="${esc(k.kidId)}" aria-pressed="false">${esc(k.name)}</button>`).join("")}</div>
+    <div class="kid-picks">${kids.map((k) => `<button type="button" class="btn-quiet" data-kid="${esc(k.kidId)}" aria-pressed="false"><span class="pick-avatar" aria-hidden="true">${esc(lookFor({ look: { avatar: k.avatar } }).avatar)}</span>${esc(k.name)}</button>`).join("")}</div>
     <form id="pin-form" hidden>
       <label>Your PIN<input name="pin" class="pin-input" type="password" inputmode="numeric" pattern="\\d{4,6}" maxlength="6" autocomplete="off" required></label>
       <p class="form-error" id="pin-error"></p>
@@ -511,10 +515,12 @@ function showParent(familyId) {
           </li>`).join("")}</ul>
       </section>` : "";
 
-    const accounts = active.map((k) => `
-      <article class="account">
+    const accounts = active.map((k) => {
+      const look = lookFor(k);
+      return `
+      <article class="account" style="--kid-accent:${themeById(look.theme).accent}">
         <div class="account-head">
-          <h3>${esc(k.name)}</h3>
+          <h3><span class="mini-avatar" aria-hidden="true">${esc(look.avatar)}</span> ${esc(k.name)}</h3>
           <span class="account-balance">${money(k.balanceCents)}</span>
         </div>
         <p class="account-meta">${esc(allowanceText(k))}</p>
@@ -524,8 +530,10 @@ function showParent(familyId) {
           <button type="button" class="btn-quiet" data-action="withdrawal" data-kid="${esc(k.id)}">Take out</button>
           <button type="button" class="btn-quiet" data-action="history" data-kid="${esc(k.id)}">Passbook</button>
           <button type="button" class="btn-quiet" data-action="edit" data-kid="${esc(k.id)}">Edit</button>
+          <button type="button" class="btn-quiet" data-action="decorate" data-kid="${esc(k.id)}">Decorate</button>
         </div>
-      </article>`).join("");
+      </article>`;
+    }).join("");
 
     const total = active.reduce((sum, k) => sum + (k.balanceCents || 0), 0);
 
@@ -590,6 +598,7 @@ function showParent(familyId) {
     if (action === "give-many") return giveManySheet(state.kids.filter((k) => !k.archived), f);
     if (action === "deposit" || action === "withdrawal") return moneySheet(kid, action, f);
     if (action === "history") return historySheet(familyId, kid);
+    if (action === "decorate") return lookSheet(kid, { asParent: true });
   };
   $app.addEventListener("click", onClick);
   unsubs.push(() => $app.removeEventListener("click", onClick));
@@ -885,6 +894,111 @@ function goalSheet(kid, asParent) {
   });
 }
 
+// ---------- kid looks (colors, patterns, buddy, stickers) ----------
+
+/**
+ * Paints the whole app in a kid's colors by setting data attributes on <html>; styles.css maps
+ * them to the shared color tokens. Pass null to go back to the standard Passbook look.
+ */
+function applyLook(look) {
+  const root = document.documentElement;
+  if (!look) {
+    delete root.dataset.kidTheme;
+    delete root.dataset.kidPattern;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", "#1F4D3A");
+    return;
+  }
+  root.dataset.kidTheme = look.theme;
+  root.dataset.kidPattern = look.pattern;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeById(look.theme).accent);
+}
+
+function stickersHtml(stickers) {
+  if (!stickers.length) return "";
+  return `<div class="sticker-board" aria-hidden="true">${stickers
+    .map((st, i) => `<span class="sticker" style="--tilt:${[-8, 6, -3, 9, -10, 4, -6, 7][i % 8]}deg">${esc(st)}</span>`)
+    .join("")}</div>`;
+}
+
+function lookSheet(kid, { asParent = false } = {}) {
+  const saved = lookFor(kid);
+  // Kids see their own page change as they pick; parents pick from the dashboard.
+  const preview = !asParent;
+  let savedOk = false;
+  openSheet({
+    title: asParent ? `Decorate ${kid.name}'s page` : "Decorate my page",
+    submitLabel: "Save my look",
+    wide: true,
+    body: `
+      <fieldset class="look-group"><legend>Pick a buddy</legend>
+        <div class="tile-grid">${AVATARS.map((a) => `<label class="tile"><input type="radio" name="avatar" value="${esc(a)}" ${a === saved.avatar ? "checked" : ""}><span class="tile-face emoji">${esc(a)}</span></label>`).join("")}</div>
+      </fieldset>
+      <fieldset class="look-group"><legend>Pick a color</legend>
+        <div class="tile-grid swatches">${THEMES.map((t) => `<label class="tile"><input type="radio" name="theme" value="${t.id}" ${t.id === saved.theme ? "checked" : ""}><span class="tile-face swatch" data-swatch="${t.id}" style="--sw:${t.accent};--sw-on:${t.on}">${esc(t.label)}</span></label>`).join("")}</div>
+      </fieldset>
+      <fieldset class="look-group"><legend>Pick a pattern</legend>
+        <div class="tile-grid patterns">${PATTERNS.map((p) => `<label class="tile"><input type="radio" name="pattern" value="${p.id}" ${p.id === saved.pattern ? "checked" : ""}><span class="tile-face pattern-face" data-pattern-face="${p.id}">${esc(p.label)}</span></label>`).join("")}</div>
+      </fieldset>
+      <fieldset class="look-group"><legend>Stickers <span class="hint" id="sticker-count"></span></legend>
+        <div class="tile-grid">${STICKERS.map((st) => `<label class="tile"><input type="checkbox" name="sticker" value="${esc(st)}" ${saved.stickers.includes(st) ? "checked" : ""}><span class="tile-face emoji">${esc(st)}</span></label>`).join("")}</div>
+      </fieldset>`,
+    onOpen(sheet) {
+      const form = sheet.querySelector("form");
+      const counter = sheet.querySelector("#sticker-count");
+      const current = () => {
+        const fd = new FormData(form);
+        return { avatar: fd.get("avatar"), theme: fd.get("theme"), pattern: fd.get("pattern"), stickers: fd.getAll("sticker") };
+      };
+      const sync = () => {
+        const n = form.querySelectorAll('[name="sticker"]:checked').length;
+        counter.textContent = `${n} of ${MAX_STICKERS} picked`;
+        // Once the limit is reached, the rest can't be ticked until one is removed.
+        form.querySelectorAll('[name="sticker"]').forEach((cb) => { cb.disabled = !cb.checked && n >= MAX_STICKERS; });
+        if (preview) {
+          const l = current();
+          applyLook(l);
+          const board = document.querySelector(".kid-hero .sticker-board-slot");
+          if (board) board.innerHTML = stickersHtml(l.stickers);
+          const av = document.querySelector(".kid-hero .avatar");
+          if (av) av.textContent = l.avatar;
+        }
+      };
+      form.addEventListener("change", sync);
+      sync();
+      return () => {
+        form.removeEventListener("change", sync);
+        // Closed without saving: put the page back the way it was.
+        if (preview && !savedOk) applyLook(saved);
+      };
+    },
+    async onSubmit(fd) {
+      const look = { avatar: fd.get("avatar"), theme: fd.get("theme"), pattern: fd.get("pattern"), stickers: fd.getAll("sticker") };
+      await call("setLook", { ...(asParent ? { kidId: kid.id } : {}), look });
+      savedOk = true;
+      return asParent ? `${kid.name}'s page is decorated` : "Looking good!";
+    },
+  });
+}
+
+/** A short emoji confetti shower. Skipped when the device asks for reduced motion. */
+function celebrate(emojis) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const pool = emojis.length ? emojis : ["🎉", "⭐", "💖"];
+  const layer = document.createElement("div");
+  layer.className = "confetti";
+  layer.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 28; i++) {
+    const bit = document.createElement("span");
+    bit.textContent = pool[i % pool.length];
+    bit.style.left = `${Math.random() * 100}%`;
+    bit.style.animationDelay = `${Math.random() * 0.8}s`;
+    bit.style.setProperty("--drift", `${Math.round(Math.random() * 120 - 60)}px`);
+    layer.append(bit);
+  }
+  document.body.append(layer);
+  setTimeout(() => layer.remove(), 4000);
+}
+
 // ---------- kid view ----------
 
 function showKid(familyId, kidId) {
@@ -907,45 +1021,71 @@ function showKid(familyId, kidId) {
   function render() {
     const k = state.kid;
     if (!k) return;
+    if ($sheet.open && $sheet.querySelector('[name="sticker"]')) return; // don't fight the live preview
+    const look = lookFor(k);
+    applyLook(look);
     const interest = interestText(state.family);
     const chores = state.family?.chores || [];
     $app.innerHTML = `
-      <section class="kid-hero">
-        <h1>Hi, ${esc(k.name)}</h1>
-        <p class="muted">You have saved</p>
-        <p class="balance-big">${money(k.balanceCents)}</p>
-        <p class="muted">${esc(allowanceText(k))}${interest ? `. You earn ${esc(interest)}.` : "."}</p>
-        ${goalHtml(k)}
-        <div class="btn-row">
-          <button type="button" data-action="ask-deposit">Ask to add money</button>
-          <button type="button" class="btn-quiet" data-action="ask-withdrawal">Ask to spend</button>
-          <button type="button" class="btn-quiet" data-action="goal">${k.goal ? "Change goal" : "Set a goal"}</button>
+      <div class="kid-page">
+        <section class="kid-hero" aria-labelledby="kid-hello">
+          <div class="hero-top">
+            <span class="avatar" aria-hidden="true">${esc(look.avatar)}</span>
+            <div>
+              <h1 id="kid-hello">Hi, ${esc(k.name)}!</h1>
+              <p class="muted">You have saved</p>
+            </div>
+          </div>
+          <p class="balance-big">${money(k.balanceCents)}</p>
+          <div class="sticker-board-slot">${stickersHtml(look.stickers)}</div>
+          <p class="muted">${esc(allowanceText(k))}${interest ? `. You earn ${esc(interest)}.` : "."}</p>
+          ${goalHtml(k)}
+          <div class="btn-row">
+            <button type="button" data-action="ask-deposit">Ask to add money</button>
+            <button type="button" class="btn-quiet" data-action="ask-withdrawal">Ask to spend</button>
+            <button type="button" class="btn-quiet" data-action="goal">${k.goal ? "Change goal" : "Set a goal"}</button>
+            <button type="button" class="btn-quiet" data-action="decorate">🎨 Decorate</button>
+          </div>
+        </section>
+        <div class="kid-side">
+          ${chores.length ? `
+            <section aria-labelledby="chores-title">
+              <h2 id="chores-title">I did a chore</h2>
+              <p class="muted">Tap the one you did. A parent will check and pay you.</p>
+              <div class="chips">${chores.map((c) => `<button type="button" class="chip chip-big" data-action="chore" data-chore="${esc(c.id)}">${esc(c.name)} <strong>${money(c.amountCents)}</strong></button>`).join("")}</div>
+            </section>` : ""}
+          ${state.requests.length ? `
+            <section aria-labelledby="pending-title">
+              <h2 id="pending-title">Waiting for a parent</h2>
+              <ul class="requests">${state.requests.map((r) => `
+                <li><span>${r.kind === "deposit" ? "Add" : "Spend"} ${money(r.amountCents)}: ${esc(r.memo)}</span></li>`).join("")}</ul>
+            </section>` : ""}
         </div>
-      </section>
-      ${chores.length ? `
-        <section aria-labelledby="chores-title">
-          <h2 id="chores-title">I did a chore</h2>
-          <p class="muted">Tap the one you did. A parent will check and pay you.</p>
-          <div class="chips">${chores.map((c) => `<button type="button" class="chip chip-big" data-action="chore" data-chore="${esc(c.id)}">${esc(c.name)} <strong>${money(c.amountCents)}</strong></button>`).join("")}</div>
-        </section>` : ""}
-      ${state.requests.length ? `
-        <section aria-labelledby="pending-title">
-          <h2 id="pending-title">Waiting for a parent</h2>
-          <ul class="requests">${state.requests.map((r) => `
-            <li><span>${r.kind === "deposit" ? "Add" : "Spend"} ${money(r.amountCents)}: ${esc(r.memo)}</span></li>`).join("")}</ul>
-        </section>` : ""}
-      <section aria-labelledby="book-title">
-        <h2 id="book-title">My passbook</h2>
-        ${ledgerHtml(state.txs)}
-        ${state.txs.length ? `<p style="margin-top:0.75rem"><button type="button" class="link" data-action="csv">Download my passbook</button></p>` : ""}
-      </section>`;
+        <section class="kid-book" aria-labelledby="book-title">
+          <h2 id="book-title">My passbook</h2>
+          ${ledgerHtml(state.txs)}
+          ${state.txs.length ? `<p style="margin-top:0.75rem"><button type="button" class="link" data-action="csv">Download my passbook</button></p>` : ""}
+        </section>
+      </div>`;
+
+    // Confetti once per goal, the first time this device sees it reached.
+    if (k.goal && k.balanceCents >= k.goal.amountCents) {
+      const key = `passbook.celebrated.${k.id}.${k.goal.name}.${k.goal.amountCents}`;
+      if (!storageGet(key)) { storageSet(key, "1"); celebrate(look.stickers); }
+    }
   }
+
+  // Renders are paused while the decorate sheet is open; catch up when it closes.
+  const onSheetClose = () => render();
+  $sheet.addEventListener("close", onSheetClose);
+  unsubs.push(() => $sheet.removeEventListener("close", onSheetClose));
 
   const onClick = async (e) => {
     const btn = e.target.closest("[data-action]");
     if (!btn || !state.kid) return;
     const a = btn.dataset.action;
     if (a === "goal") return goalSheet(state.kid, false);
+    if (a === "decorate") return lookSheet(state.kid);
     if (a === "csv") return exportCsv(familyId, [state.kid], `${fileSafe(state.kid.name)}-passbook.csv`).catch((err) => toast(err.message));
     if (a === "chore") {
       btn.disabled = true;

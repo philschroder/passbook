@@ -20,6 +20,14 @@ Interest is paid by you, so set it with care. A high rate is a great teaching to
 - Savings goals with a progress bar
 - A passbook-style transaction history for every account
 - Installable on phones as a home-screen web app
+- Works on phones, tablets, and desktops: layouts adapt to the space available, and the passbook turns into easy-to-read cards on small screens
+
+### Made for kids
+
+- **Decorate my page.** Each kid picks a buddy (an animal avatar), one of 10 colors, a background pattern, and up to 8 stickers. Their whole page, including the top bar and buttons, switches to their colors. Parents can decorate a kid's page too, from the **Decorate** button on that kid's card.
+- **Readable in every color.** Every color theme is checked for at least 4.5:1 text contrast, in light and dark mode.
+- **Spot yourself.** Kids see their buddy next to their name on the sign-in screen, and parents see each kid's color and buddy on their card.
+- **Goal confetti.** When a kid's savings reach their goal, their stickers rain down once to celebrate. It's skipped on devices set to reduce motion.
 
 ### Made for non-technical families
 
@@ -50,7 +58,7 @@ test/e2e.mjs     End-to-end test against the emulators
 codes/{familyCode}                         -> { familyId }
 families/{fid}                             name, code, timeZone, interestRatePct, interestPeriod, interestCapCents, chores[]
 families/{fid}/private/settings            webhookUrl (parents can read; kids can't)
-families/{fid}/kids/{kidId}                name, balanceCents, allowanceCents, allowanceDay, goal, archived
+families/{fid}/kids/{kidId}                name, balanceCents, allowanceCents, allowanceDay, goal, look, archived
 families/{fid}/kids/{kidId}/transactions   type, amountCents (signed), balanceAfterCents, memo, by, createdAt
 families/{fid}/kidSecrets/{kidId}          pinHash, failedAttempts, lockedUntil
 families/{fid}/requests/{id}               kidId, kind, amountCents, memo, choreId, status
@@ -59,6 +67,8 @@ families/{fid}/requests/{id}               kidId, kind, amountCents, memo, chore
 All money is stored as integer cents. Interest rounds down to the cent.
 
 **Payouts.** `dailyPayouts` runs every hour at :05. Each family is paid on the first run at or after 6 AM in that family's own time zone. For each kid it pays interest (if due today) and then allowance (if today is their payday), inside a Firestore transaction. Each payout is stamped (`lastInterestKey`, `lastAllowanceDate`), so the later runs that day pay nothing. Parents can trigger the same job from the settings screen.
+
+**Looks.** `look` is `{ theme, pattern, avatar, stickers[] }`, set by `setLook` (a kid for themselves, or a parent for any kid). The server accepts only values from fixed lists in `functions/lib/core.js`. `public/looks.js` holds the same lists plus colors, and a unit test keeps the two in sync.
 
 **Chores.** A chore request carries only the chore's id. The function looks up the name and amount from the parent's list, so a kid can't change what a chore pays.
 
@@ -108,7 +118,7 @@ npm install                      # client SDK for the e2e test
 npm --prefix functions install
 
 npm run dev        # emulators + hosting at http://localhost:5000
-npm test           # unit tests for lib/core.js and the CSV export
+npm test           # unit tests for lib/core.js, the CSV export, and kid looks
 npm run test:e2e   # full flow against the emulators
 ```
 
