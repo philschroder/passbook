@@ -93,3 +93,15 @@ test("checkWebhookUrl", () => {
   assert.equal(core.checkWebhookUrl("http://127.0.0.1:9/x", { allowLocalHttp: true }), "http://127.0.0.1:9/x");
   assert.throws(() => core.checkWebhookUrl("http://10.0.0.1/x", { allowLocalHttp: true }), /https/);
 });
+
+test("checkLook accepts only listed choices", () => {
+  const ok = core.checkLook({ theme: "ocean", pattern: "dots", avatar: "🦊", stickers: ["⭐", "🚀", "⭐"] });
+  assert.deepEqual(ok, { theme: "ocean", pattern: "dots", avatar: "🦊", stickers: ["⭐", "🚀"] });
+  assert.deepEqual(core.checkLook({ theme: "mint", pattern: "plain", avatar: "🐼", stickers: [] }).stickers, []);
+  assert.throws(() => core.checkLook({ theme: "neon", pattern: "dots", avatar: "🦊", stickers: [] }), /color/);
+  assert.throws(() => core.checkLook({ theme: "ocean", pattern: "plaid", avatar: "🦊", stickers: [] }), /pattern/);
+  assert.throws(() => core.checkLook({ theme: "ocean", pattern: "dots", avatar: "<b>", stickers: [] }), /buddy/);
+  assert.throws(() => core.checkLook({ theme: "ocean", pattern: "dots", avatar: "🦊", stickers: ["<script>"] }), /stickers/);
+  assert.throws(() => core.checkLook({ theme: "ocean", pattern: "dots", avatar: "🦊", stickers: core.LOOK_STICKERS.slice(0, 9) }), /up to 8/);
+  assert.throws(() => core.checkLook(null));
+});

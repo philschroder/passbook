@@ -133,6 +133,38 @@ function checkWebhookUrl(value, { allowLocalHttp = false } = {}) {
   return url.toString();
 }
 
+// Kid page customization. The client copy with colors lives in public/looks.js; a unit test
+// keeps the two lists in sync.
+const LOOK_THEMES = ["forest", "ocean", "grape", "bubblegum", "sunshine", "sunset", "cherry", "mint", "galaxy", "rainbow"];
+const LOOK_PATTERNS = ["plain", "dots", "stripes", "checks", "confetti", "waves"];
+const LOOK_AVATARS = [
+  "🦊", "🐼", "🐯", "🦁", "🐸", "🐵", "🐶", "🐱", "🐰", "🐨", "🐧", "🦄",
+  "🐲", "🦖", "🐙", "🦋", "🐝", "🐢", "🦉", "🐬", "🚀", "⚽", "🎨", "🌟",
+];
+const LOOK_STICKERS = [
+  "⭐", "🌈", "🚀", "🦄", "🍕", "🍦", "🎮", "⚽", "🏀", "🎨", "🎸", "🎧",
+  "📚", "🌻", "🌸", "🍀", "🌙", "🔥", "💎", "🎉", "🎁", "🐾", "🐳", "🦕",
+  "🍩", "🧁", "🍓", "🍉", "🏆", "👑", "💖", "🌊", "⛄", "🎈", "🛹", "🚲",
+  "🤖", "👾", "🦖", "🐱",
+];
+const MAX_STICKERS = 8;
+
+/** Validates a kid's page look. Every field must come from the fixed lists above. */
+function checkLook(look) {
+  if (!look || typeof look !== "object") throw "Pick how your page looks.";
+  const theme = LOOK_THEMES.includes(look.theme) ? look.theme : null;
+  if (!theme) throw "Pick a color from the list.";
+  const pattern = LOOK_PATTERNS.includes(look.pattern) ? look.pattern : null;
+  if (!pattern) throw "Pick a pattern from the list.";
+  const avatar = LOOK_AVATARS.includes(look.avatar) ? look.avatar : null;
+  if (!avatar) throw "Pick a buddy from the list.";
+  if (!Array.isArray(look.stickers)) throw "Stickers must be a list.";
+  const stickers = [...new Set(look.stickers)];
+  if (stickers.length > MAX_STICKERS) throw `You can pick up to ${MAX_STICKERS} stickers.`;
+  if (stickers.some((x) => !LOOK_STICKERS.includes(x))) throw "Pick stickers from the list.";
+  return { theme, pattern, avatar, stickers };
+}
+
 function cleanText(value, maxLen) {
   if (typeof value !== "string") return "";
   return value.replace(/\s+/g, " ").trim().slice(0, maxLen);
@@ -146,6 +178,12 @@ module.exports = {
   isValidTimeZone,
   checkChores,
   checkWebhookUrl,
+  LOOK_THEMES,
+  LOOK_PATTERNS,
+  LOOK_AVATARS,
+  LOOK_STICKERS,
+  MAX_STICKERS,
+  checkLook,
   interestPeriodKey,
   computeInterest,
   isAllowanceDue,

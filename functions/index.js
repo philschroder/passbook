@@ -330,7 +330,8 @@ exports.listKidsForCode = callable(async (req) => {
     .collection(`families/${codeSnap.data().familyId}/kids`)
     .where("archived", "==", false)
     .get();
-  return { kids: kids.docs.map((k) => ({ kidId: k.id, name: k.data().name })) };
+  // Only first name and avatar emoji, so kids can spot themselves on the sign-in screen.
+  return { kids: kids.docs.map((k) => ({ kidId: k.id, name: k.data().name, avatar: k.data().look?.avatar || null })) };
 });
 
 exports.kidLogin = callable(async (req) => {
@@ -449,6 +450,24 @@ exports.setGoal = callable(async (req) => {
   const amountCents = core.checkCents(req.data?.amountCents);
   await ref.update({ goal: { name, amountCents } });
   return { ok: true };
+});
+
+/** Kids decorate their own page; parents can decorate any kid's by passing kidId. */
+exports.setLook = callable(async (req) => {
+  const t = req.auth?.token;
+  let fid;
+  let kidId;
+  if (t?.role === "parent") {
+    fid = requireParent(req);
+    kidId = String(req.data?.kidId || "");
+  } else {
+    ({ familyId: fid, kidId } = requireKid(req));
+  }
+  const ref = kidRef(fid, kidId);
+  if (!(await ref.get()).exists) throw new HttpsError("not-found", "Kid not found.");
+  const look = core.checkLook(req.data?.look);
+  await ref.update({ look });
+  return { ok: true, look };
 });
 
 // ---------- scheduled payouts ----------

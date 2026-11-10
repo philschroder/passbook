@@ -136,6 +136,21 @@ console.log("  ok: chore request priced server-side, webhooks for request and en
 await K.call("setGoal", { name: "Bike", amountCents: 12000 });
 a = (await getDoc(doc(K.db, `families/${familyId}/kids/${ava}`))).data();
 assert.deepEqual(a.goal, { name: "Bike", amountCents: 12000 });
+// Decorating: kids style their own page, parents can style any kid's, only listed choices count
+await K.call("setLook", { look: { theme: "ocean", pattern: "stars", avatar: "🦊", stickers: [] } }).then(
+  () => assert.fail("bad pattern should fail"), (e) => assert.match(e.message, /pattern/));
+await K.call("setLook", { kidId: ben, look: { theme: "ocean", pattern: "dots", avatar: "🦊", stickers: ["⭐", "🚀"] } });
+a = (await getDoc(doc(K.db, `families/${familyId}/kids/${ava}`))).data();
+assert.deepEqual(a.look, { theme: "ocean", pattern: "dots", avatar: "🦊", stickers: ["⭐", "🚀"] }, "kidId ignored for kids: only their own page");
+b = (await getDoc(doc(P.db, `families/${familyId}/kids/${ben}`))).data();
+assert.equal(b.look, undefined, "Ben untouched by Ava");
+await P.call("setLook", { kidId: ben, look: { theme: "sunshine", pattern: "confetti", avatar: "🐼", stickers: ["🏀"] } });
+b = (await getDoc(doc(P.db, `families/${familyId}/kids/${ben}`))).data();
+assert.equal(b.look.theme, "sunshine");
+const withAvatars = await K.call("listKidsForCode", { code });
+assert.deepEqual(withAvatars.kids.map((k) => k.avatar).sort(), ["🐼", "🦊"]);
+console.log("  ok: decorating own page, parent decorating, avatars on sign-in");
+
 console.log("Final Ava:", a.balanceCents, a.goal);
 console.log("ALL E2E CHECKS PASSED");
 hook.close();
