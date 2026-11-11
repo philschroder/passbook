@@ -11,6 +11,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js";
 import { toCsv, downloadCsv } from "./csv.js";
 import { THEMES, PATTERNS, AVATARS, STICKERS, MAX_STICKERS, themeById, lookFor } from "./looks.js";
+import { icon } from "./icons.js";
 
 /**
  * Firebase Hosting serves this project's web config at /__/firebase/init.json, so no one has to
@@ -189,7 +190,7 @@ function openSheet({ title, body, submitLabel, onSubmit, wide = false, onOpen })
   sheetCleanup = null;
   $sheet.classList.toggle("wide", wide);
   const head = `<div class="sheet-head"><h2 id="sheet-title">${esc(title)}</h2>
-    <button type="button" class="btn-quiet" data-close>Close</button></div>`;
+    <button type="button" class="btn-quiet sheet-close" data-close aria-label="Close">${icon("x")}<span class="close-text">Close</span></button></div>`;
   $sheet.innerHTML = onSubmit
     ? `${head}<form novalidate>${body}<p class="form-error" id="sheet-error"></p>
         <div class="sheet-actions"><button type="submit">${esc(submitLabel || "Save")}</button></div></form>`
@@ -282,8 +283,11 @@ async function route(user, forceRefresh = false) {
   if ($sheet.open) $sheet.close();
   $header.innerHTML = "";
   applyLook(null);
+  delete document.documentElement.dataset.role;
   if (!user) return showLanding();
   const { claims } = await user.getIdTokenResult(forceRefresh);
+  // Parent screens get the calmer, professional styling; kid screens stay playful.
+  document.documentElement.dataset.role = claims.role === "kid" ? "kid" : "parent";
   if (claims.role === "kid") return showKid(claims.familyId, claims.kidId);
   if (claims.role === "parent") return showParent(claims.familyId);
   return showCreateFamily(user);
@@ -464,20 +468,59 @@ function gettingStarted(f, active) {
   if (storageGet(HIDE_STEPS_KEY) === f.code) return "";
   const steps = [
     { done: active.length > 0, text: "Add each child as a saver", action: "add-kid", btn: "Add a saver" },
-    { done: active.some((k) => k.allowanceCents > 0) || f.interestRatePct > 0, text: "Set an allowance or interest (optional)", action: "settings", btn: "Pick interest" },
-    { done: (f.chores || []).length > 0, text: "List chores kids can earn money for (optional)", action: "chores", btn: "Add chores" },
+    { done: active.some((k) => k.allowanceCents > 0) || f.interestRatePct > 0, text: "Set an allowance or interest", note: "Optional", action: "settings", btn: "Set interest" },
+    { done: (f.chores || []).length > 0, text: "List chores kids can earn money for", note: "Optional", action: "chores", btn: "Add chores" },
     { done: storageGet(SHARED_KEY) === f.code, text: "Send your kids their sign-in link", action: "share", btn: "Send link" },
   ];
   if (steps.every((st) => st.done)) return "";
-  const left = steps.filter((st) => !st.done).length;
-  return `<section class="panel steps" aria-labelledby="steps-title">
-    <h2 id="steps-title">Getting started <span class="muted">(${left} to go)</span></h2>
-    <ol>${steps.map((st) => `<li class="${st.done ? "done" : ""}">
-      <span>${st.done ? "<span class=\"tick\" aria-hidden=\"true\">✓</span> " : ""}${esc(st.text)}${st.done ? '<span class="visually-hidden"> (done)</span>' : ""}</span>
-      ${st.done ? "" : `<button type="button" class="btn-quiet" data-action="${st.action}">${st.btn}</button>`}</li>`).join("")}</ol>
-    <p><button type="button" class="link" data-action="hide-steps">Hide this list</button></p>
+  const done = steps.filter((st) => st.done).length;
+  return `<section class="card steps" aria-labelledby="steps-title">
+    <div class="card-head">
+      <div>
+        <h2 id="steps-title">Getting started</h2>
+        <p class="muted">${done} of ${steps.length} done</p>
+      </div>
+      <button type="button" class="btn-ghost btn-sm" data-action="hide-steps">Hide</button>
+    </div>
+    <div class="meter" role="progressbar" aria-label="Setup progress" aria-valuemin="0" aria-valuemax="${steps.length}" aria-valuenow="${done}"><span style="width:${(done / steps.length) * 100}%"></span></div>
+    <ol class="step-list">${steps.map((st) => `<li class="${st.done ? "done" : ""}">
+      <span class="step-mark" aria-hidden="true">${st.done ? icon("check", 14) : ""}</span>
+      <span class="step-text">${esc(st.text)}${st.note && !st.done ? ` <span class="badge">${st.note}</span>` : ""}${st.done ? '<span class="visually-hidden"> (done)</span>' : ""}</span>
+      ${st.done ? "" : `<button type="button" class="btn-secondary btn-sm" data-action="${st.action}">${st.btn}</button>`}</li>`).join("")}</ol>
   </section>`;
 }
+
+/** The next weekday (in the family's time zone) on which allowance will be paid, and how much. */
+function nextPayout(f, kids) {
+  const payers = kids.filter((k) => k.allowanceCents > 0);
+  if (!payers.length) return null;
+  const tz = f.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date();
+  const todayYmd = now.toLocaleDateString("en-CA", { timeZone: tz });
+  const todayDow = DAYS.indexOf(now.toLocaleDateString("en-US", { timeZone: tz, weekday: "long" }));
+  for (let ahead = 0; ahead < 8; ahead++) {
+    const dow = (todayDow + ahead) % 7;
+    const due = payers.filter((k) => k.allowanceDay === dow && !(ahead === 0 && k.lastAllowanceDate === todayYmd));
+    if (due.length) {
+      return {
+        when: ahead === 0 ? "Today" : ahead === 1 ? "Tomorrow" : DAYS[dow],
+        cents: due.reduce((s, k) => s + k.allowanceCents, 0),
+        count: due.length,
+      };
+    }
+  }
+  return null;
+}
+
+const timeAgo = (ts) => {
+  const ms = ts?.toMillis ? Date.now() - ts.toMillis() : 0;
+  const min = Math.round(ms / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} h ago`;
+  return fmtDate(ts);
+};
 
 function showParent(familyId) {
   signOutButton();
@@ -500,66 +543,116 @@ function showParent(familyId) {
     if (!f) return;
     const active = state.kids.filter((k) => !k.archived);
     const archived = state.kids.filter((k) => k.archived);
+    const kidLook = (id) => lookFor(state.kids.find((k) => k.id === id));
 
-    const requests = state.requests.length ? `
-      <section aria-labelledby="req-title">
-        <h2 id="req-title">Waiting for you (${state.requests.length})</h2>
-        <ul class="requests">${state.requests.map((r) => `
+    const total = active.reduce((sum, k) => sum + (k.balanceCents || 0), 0);
+    const weekly = active.reduce((sum, k) => sum + (k.allowanceCents || 0), 0);
+    const next = nextPayout(f, active);
+    const pending = state.requests.length;
+
+    const stats = `
+      <section class="stats" aria-label="Summary">
+        <div class="stat">
+          <p class="stat-label">Total held</p>
+          <p class="stat-value">${money(total)}</p>
+          <p class="stat-sub">${active.length === 1 ? "1 saver" : `${active.length} savers`}</p>
+        </div>
+        <div class="stat">
+          <p class="stat-label">Waiting for approval</p>
+          <p class="stat-value">${pending}</p>
+          <p class="stat-sub">${pending ? `${pending === 1 ? "request" : "requests"} from your kids` : "All caught up"}</p>
+        </div>
+        <div class="stat">
+          <p class="stat-label">Weekly allowance</p>
+          <p class="stat-value">${money(weekly)}</p>
+          <p class="stat-sub">${esc(interestText(f) || "No interest")}</p>
+        </div>
+        <div class="stat">
+          <p class="stat-label">Next payout</p>
+          <p class="stat-value">${next ? esc(next.when) : "None"}</p>
+          <p class="stat-sub">${next ? `${money(next.cents)} to ${next.count === 1 ? "1 saver" : `${next.count} savers`}` : "No allowance set"}</p>
+        </div>
+      </section>`;
+
+    const requests = pending ? `
+      <section class="card" aria-labelledby="req-title">
+        <div class="card-head"><h2 id="req-title">Needs your approval <span class="count">${pending}</span></h2></div>
+        <ul class="req-list">${state.requests.map((r) => `
           <li>
-            <div><strong>${esc(r.kidName)}</strong> wants to ${r.kind === "deposit" ? "add" : "spend"}
-              <strong>${money(r.amountCents)}</strong><br><span class="muted">${esc(r.memo)}</span></div>
-            <div class="btn-row">
-              <button type="button" data-action="approve" data-id="${esc(r.id)}">Approve</button>
-              <button type="button" class="btn-quiet" data-action="deny" data-id="${esc(r.id)}">Deny</button>
+            <span class="row-avatar" aria-hidden="true" style="--kid-accent:${themeById(kidLook(r.kidId).theme).accent}">${esc(kidLook(r.kidId).avatar)}</span>
+            <div class="req-main">
+              <p><strong>${esc(r.kidName)}</strong> wants to ${r.kind === "deposit" ? "add" : "spend"} <strong class="num">${money(r.amountCents)}</strong></p>
+              <p class="muted">${esc(r.memo)} · ${esc(timeAgo(r.createdAt))}</p>
+            </div>
+            <div class="req-actions">
+              <button type="button" class="btn-secondary btn-sm" data-action="deny" data-id="${esc(r.id)}">Deny</button>
+              <button type="button" class="btn-primary btn-sm" data-action="approve" data-id="${esc(r.id)}">Approve</button>
             </div>
           </li>`).join("")}</ul>
       </section>` : "";
 
     const accounts = active.map((k) => {
       const look = lookFor(k);
+      const goal = k.goal ? (() => {
+        const pct = Math.min(100, Math.round((k.balanceCents / k.goal.amountCents) * 100));
+        return `<div class="acct-goal">
+          <div class="acct-goal-row"><span>Goal: ${esc(k.goal.name)}</span><span class="num">${pct}%</span></div>
+          <div class="meter" role="progressbar" aria-label="${esc(k.name)}'s goal progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
+          <p class="muted acct-goal-sub">${money(k.balanceCents)} of ${money(k.goal.amountCents)}</p>
+        </div>`;
+      })() : "";
       return `
       <article class="account" style="--kid-accent:${themeById(look.theme).accent}">
-        <div class="account-head">
-          <h3><span class="mini-avatar" aria-hidden="true">${esc(look.avatar)}</span> ${esc(k.name)}</h3>
-          <span class="account-balance">${money(k.balanceCents)}</span>
+        <div class="acct-top">
+          <span class="row-avatar" aria-hidden="true">${esc(look.avatar)}</span>
+          <div class="acct-id">
+            <h3>${esc(k.name)}</h3>
+            <p class="muted">${esc(allowanceText(k))}</p>
+          </div>
+          <p class="acct-balance"><span class="visually-hidden">Balance </span>${money(k.balanceCents)}</p>
         </div>
-        <p class="account-meta">${esc(allowanceText(k))}</p>
-        ${goalHtml(k)}
-        <div class="btn-row">
-          <button type="button" data-action="deposit" data-kid="${esc(k.id)}">Add money</button>
-          <button type="button" class="btn-quiet" data-action="withdrawal" data-kid="${esc(k.id)}">Take out</button>
-          <button type="button" class="btn-quiet" data-action="history" data-kid="${esc(k.id)}">Passbook</button>
-          <button type="button" class="btn-quiet" data-action="edit" data-kid="${esc(k.id)}">Edit</button>
-          <button type="button" class="btn-quiet" data-action="decorate" data-kid="${esc(k.id)}">Decorate</button>
+        ${goal}
+        <div class="acct-actions">
+          <button type="button" class="btn-primary btn-sm" data-action="deposit" data-kid="${esc(k.id)}">${icon("plus", 16)} Add money</button>
+          <button type="button" class="btn-secondary btn-sm" data-action="withdrawal" data-kid="${esc(k.id)}">${icon("minus", 16)} Take out</button>
+          <span class="acct-tools">
+            <button type="button" class="btn-icon" data-action="history" data-kid="${esc(k.id)}" aria-label="${esc(k.name)}'s passbook" title="Passbook">${icon("book")}</button>
+            <button type="button" class="btn-icon" data-action="edit" data-kid="${esc(k.id)}" aria-label="Edit ${esc(k.name)}" title="Edit saver">${icon("pencil")}</button>
+            <button type="button" class="btn-icon" data-action="decorate" data-kid="${esc(k.id)}" aria-label="Customize ${esc(k.name)}'s page" title="Customize page">${icon("palette")}</button>
+          </span>
         </div>
       </article>`;
     }).join("");
 
-    const total = active.reduce((sum, k) => sum + (k.balanceCents || 0), 0);
-
     $app.innerHTML = `
-      <section>
-        <h1>${esc(f.name)}</h1>
-        <p>Family code <span class="family-code">${esc(f.code)}</span>
-          <button type="button" class="link" data-action="share">Send sign-in link</button></p>
-        <p class="muted">${esc(interestText(f) || "No interest set.")}</p>
-        <div class="btn-row">
-          <button type="button" class="btn-gold" data-action="add-kid">Add a saver</button>
-          ${active.length > 1 ? `<button type="button" class="btn-quiet" data-action="give-many">Give to several</button>` : ""}
-          <button type="button" class="btn-quiet" data-action="chores">Chores</button>
-          <button type="button" class="btn-quiet" data-action="settings">Interest &amp; settings</button>
-        </div>
-      </section>
-      ${gettingStarted(f, active)}
-      ${requests}
-      <section aria-labelledby="acct-title">
-        <h2 id="acct-title">Savers</h2>
-        ${active.length ? `<div class="accounts">${accounts}</div>
-          <p class="muted total">You're holding ${money(total)} for ${active.length === 1 ? "1 saver" : `${active.length} savers`}.
-            <button type="button" class="link" data-action="export-all">Download everything (spreadsheet)</button></p>`
-          : `<p class="muted">Add your first saver to open their passbook.</p>`}
-        ${archived.length ? `<p class="muted" style="margin-top:1rem">Archived: ${archived.map((k) => `<button type="button" class="link" data-action="edit" data-kid="${esc(k.id)}">${esc(k.name)}</button>`).join(", ")}</p>` : ""}
-      </section>`;
+      <div class="dash">
+        <header class="dash-head">
+          <div>
+            <h1>${esc(f.name)}</h1>
+            <p class="muted dash-code">Family code <span class="family-code">${esc(f.code)}</span>
+              <button type="button" class="btn-ghost btn-sm" data-action="share">${icon("link", 16)} Send sign-in link</button></p>
+          </div>
+          <div class="dash-actions">
+            <button type="button" class="btn-secondary" data-action="chores">${icon("list")} Chores</button>
+            <button type="button" class="btn-secondary" data-action="settings">${icon("settings")} Settings</button>
+            ${active.length > 1 ? `<button type="button" class="btn-secondary" data-action="give-many">${icon("users")} Give to several</button>` : ""}
+            <button type="button" class="btn-primary" data-action="add-kid">${icon("plus")} Add saver</button>
+          </div>
+        </header>
+        ${active.length ? stats : ""}
+        ${gettingStarted(f, active)}
+        ${requests}
+        <section aria-labelledby="acct-title">
+          <div class="section-head">
+            <h2 id="acct-title">Savers</h2>
+            ${active.length ? `<button type="button" class="btn-ghost btn-sm" data-action="export-all">${icon("download", 16)} Export CSV</button>` : ""}
+          </div>
+          ${active.length ? `<div class="accounts">${accounts}</div>`
+            : `<div class="card empty-state"><p><strong>No savers yet</strong></p><p class="muted">Add your first child to open their passbook.</p>
+                <button type="button" class="btn-primary" data-action="add-kid">${icon("plus")} Add saver</button></div>`}
+          ${archived.length ? `<p class="muted archived">Archived: ${archived.map((k) => `<button type="button" class="link" data-action="edit" data-kid="${esc(k.id)}">${esc(k.name)}</button>`).join(", ")}</p>` : ""}
+        </section>
+      </div>`;
   }
 
   const kidById = (id) => state.kids.find((k) => k.id === id);
@@ -926,7 +1019,7 @@ function lookSheet(kid, { asParent = false } = {}) {
   const preview = !asParent;
   let savedOk = false;
   openSheet({
-    title: asParent ? `Decorate ${kid.name}'s page` : "Decorate my page",
+    title: asParent ? `Customize ${kid.name}'s page` : "Decorate my page",
     submitLabel: "Save my look",
     wide: true,
     body: `
@@ -975,7 +1068,7 @@ function lookSheet(kid, { asParent = false } = {}) {
       const look = { avatar: fd.get("avatar"), theme: fd.get("theme"), pattern: fd.get("pattern"), stickers: fd.getAll("sticker") };
       await call("setLook", { ...(asParent ? { kidId: kid.id } : {}), look });
       savedOk = true;
-      return asParent ? `${kid.name}'s page is decorated` : "Looking good!";
+      return asParent ? `${kid.name}'s page is updated` : "Looking good!";
     },
   });
 }

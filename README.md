@@ -22,6 +22,10 @@ Interest is paid by you, so set it with care. A high rate is a great teaching to
 - Installable on phones as a home-screen web app
 - Works on phones, tablets, and desktops: layouts adapt to the space available, and the passbook turns into easy-to-read cards on small screens
 
+### A clean dashboard for parents
+
+Parents get a calm, professional dashboard: a summary row (total held, requests waiting, weekly allowance, next payout), an approval queue, and a card per saver with the common actions up front. Kids keep their own colorful, playful pages. The two looks are kept separate by a `data-role` attribute on `<html>`, so styling one can't change the other.
+
 ### Made for kids
 
 - **Decorate my page.** Each kid picks a buddy (an animal avatar), one of 10 colors, a background pattern, and up to 8 stickers. Their whole page, including the top bar and buttons, switches to their colors. Parents can decorate a kid's page too, from the **Decorate** button on that kid's card.
