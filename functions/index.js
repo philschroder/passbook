@@ -119,7 +119,10 @@ function writeEntry(t, ref, kid, { type, delta, memo, by }) {
 exports.createFamily = callable(async (req) => {
   const uid = req.auth?.uid;
   const provider = req.auth?.token?.firebase?.sign_in_provider;
-  if (!uid || provider === "custom") throw new HttpsError("unauthenticated", "Sign in as a parent first.");
+  // Only email/password (or other real) accounts can own a family, never a kid's session.
+  if (!uid || provider === "custom" || provider === "anonymous") {
+    throw new HttpsError("unauthenticated", "Sign in as a parent first.");
+  }
   if (req.auth.token.familyId) throw new HttpsError("already-exists", "You already have a family.");
 
   const name = core.cleanText(req.data?.name, 40) || "Our family";
@@ -334,7 +337,16 @@ exports.listKidsForCode = callable(async (req) => {
   return { kids: kids.docs.map((k) => ({ kidId: k.id, name: k.data().name, avatar: k.data().look?.avatar || null })) };
 });
 
+/**
+ * Kid sign-in. The kid's device first signs in anonymously (which by itself can read nothing);
+ * if the PIN is right, this marks that anonymous account as the kid with custom claims.
+ * Setting claims needs no extra Google Cloud permissions, unlike signing custom tokens.
+ */
 exports.kidLogin = callable(async (req) => {
+  const caller = req.auth;
+  if (!caller?.uid || caller.token?.firebase?.sign_in_provider !== "anonymous") {
+    throw new HttpsError("unauthenticated", "Open Passbook again, then pick your name.");
+  }
   const code = core.cleanText(req.data?.code, 10).toUpperCase();
   const kidId = String(req.data?.kidId || "");
   const pin = core.checkPin(req.data?.pin);
@@ -373,12 +385,8 @@ exports.kidLogin = callable(async (req) => {
     throw new HttpsError("failed-precondition", "No PIN set. Ask a parent to reset it.");
   }
 
-  const token = await getAuth().createCustomToken(`kid_${fid}_${kidId}`, {
-    role: "kid",
-    familyId: fid,
-    kidId,
-  });
-  return { token };
+  await getAuth().setCustomUserClaims(caller.uid, { role: "kid", familyId: fid, kidId });
+  return { ok: true };
 });
 
 // ---------- kid actions ----------
