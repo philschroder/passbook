@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signInWithCustomToken, signOut, sendPasswordResetEmail, connectAuthEmulator,
+  signInAnonymously, signOut, sendPasswordResetEmail, connectAuthEmulator,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, collection, query, where, orderBy, limit, onSnapshot, connectFirestoreEmulator,
@@ -271,14 +271,25 @@ function interestText(f) {
 
 function signOutButton() {
   $header.innerHTML = `<button type="button" class="btn-quiet" id="sign-out">Sign out</button>`;
-  document.getElementById("sign-out").addEventListener("click", () => signOut(auth));
+  document.getElementById("sign-out").addEventListener("click", async () => {
+    // A kid's session is a throwaway anonymous account: delete it rather than leave it behind.
+    const user = auth.currentUser;
+    if (user?.isAnonymous) {
+      try { await user.delete(); return; } catch { /* fall through to a plain sign-out */ }
+    }
+    signOut(auth);
+  });
 }
+
+// True while a kid is mid sign-in, so the anonymous sign-in doesn't redraw the PIN screen.
+let kidSigningIn = false;
 
 // ---------- routing ----------
 
 onAuthStateChanged(auth, (user) => route(user));
 
 async function route(user, forceRefresh = false) {
+  if (kidSigningIn) return;
   clearSubs();
   if ($sheet.open) $sheet.close();
   $header.innerHTML = "";
@@ -290,6 +301,7 @@ async function route(user, forceRefresh = false) {
   document.documentElement.dataset.role = claims.role === "kid" ? "kid" : "parent";
   if (claims.role === "kid") return showKid(claims.familyId, claims.kidId);
   if (claims.role === "parent") return showParent(claims.familyId);
+  if (user.isAnonymous) { delete document.documentElement.dataset.role; return showLanding(); } // kid who hasn't entered a PIN yet
   return showCreateFamily(user);
 }
 
@@ -406,10 +418,16 @@ function showPinStep(step, code, kids) {
     err.textContent = "";
     btn.disabled = true;
     try {
-      const { token } = await call("kidLogin", { code, kidId, pin: String(new FormData(pinForm).get("pin")) });
-      await signInWithCustomToken(auth, token);
+      kidSigningIn = true;
+      if (!auth.currentUser?.isAnonymous) await signInAnonymously(auth);
+      await call("kidLogin", { code, kidId, pin: String(new FormData(pinForm).get("pin")) });
+      kidSigningIn = false;
+      await route(auth.currentUser, true); // refresh the token to pick up the kid claims
     } catch (ex) {
-      err.textContent = ex.message;
+      kidSigningIn = false;
+      err.textContent = ["auth/admin-restricted-operation", "auth/operation-not-allowed"].includes(ex.code)
+        ? "Kid sign-in isn't switched on yet. A parent needs to turn on Anonymous sign-in in the Firebase console (Authentication > Sign-in method)."
+        : ex.message;
       pinForm.pin.value = "";
       btn.disabled = false;
     }

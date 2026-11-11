@@ -54,7 +54,7 @@ firestore.rules  Read-only access, scoped by custom claims
 test/e2e.mjs     End-to-end test against the emulators
 ```
 
-**Security model.** Browsers can only read. Balances, ledger entries, and requests are written by Cloud Functions, so a kid with dev tools can't give themselves money, and neither can a parent by accident. Parents sign in with email and password and get a `role: parent` custom claim when they create a family. Kids sign in through `kidLogin`, which checks a scrypt-hashed PIN (locks for 15 minutes after 5 misses) and returns a custom token with `role: kid` and their `kidId`. Firestore rules let kids read only their own account and requests. PIN hashes live in `kidSecrets`, which no client can read.
+**Security model.** Browsers can only read. Balances, ledger entries, and requests are written by Cloud Functions, so a kid with dev tools can't give themselves money, and neither can a parent by accident. Parents sign in with email and password and get a `role: parent` custom claim when they create a family. Kids sign in in two steps: the device signs in anonymously (which by itself can read nothing), then `kidLogin` checks a scrypt-hashed PIN (locks for 15 minutes after 5 misses) and sets `role: kid`, `familyId`, and `kidId` custom claims on that anonymous account. Anonymous accounts can't create a family, and signing out deletes the kid's anonymous account. This needs no extra Google Cloud permissions. Firestore rules let kids read only their own account and requests. PIN hashes live in `kidSecrets`, which no client can read.
 
 **Data model.**
 
@@ -81,12 +81,11 @@ All money is stored as integer cents. Interest rounds down to the cent.
 You need Node 22 and the Firebase CLI (`npm i -g firebase-tools`).
 
 1. **Create a Firebase project** at console.firebase.google.com. Upgrade it to the Blaze plan, which Cloud Functions and scheduled jobs require. Normal family use costs nothing, but you can set a budget alert to be sure.
-2. **Turn on Email/Password sign-in** under Authentication > Sign-in method.
+2. **Turn on sign-in.** Under Authentication, click **Get started** if you see it. Then under Sign-in method, turn on **Email/Password** (for parents) and **Anonymous** (for kids' PIN sign-in).
 3. **Create a Firestore database** in production mode.
 4. **Register a web app** under Project settings > Your apps (any nickname, tick "Also set up Firebase Hosting"). You don't need to copy the config anywhere: Firebase Hosting gives the app its config automatically.
 5. **Point the CLI at your project.** Copy `.firebaserc.example` to `.firebaserc` and set your project ID, or run `firebase use --add`.
-6. **Allow kid sign-in tokens to be signed.** In the Google Cloud console under IAM, give the functions runtime service account (`PROJECT_NUMBER-compute@developer.gserviceaccount.com`) the **Service Account Token Creator** role, and enable the **IAM Service Account Credentials API**. Without this, `kidLogin` fails with a signBlob permission error.
-7. **Deploy.**
+6. **Deploy.**
 
    ```sh
    npm --prefix functions install

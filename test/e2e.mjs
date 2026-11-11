@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, connectAuthEmulator, createUserWithEmailAndPassword, signInWithCustomToken } from "firebase/auth";
+import { getAuth, connectAuthEmulator, createUserWithEmailAndPassword, signInAnonymously } from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, setDoc, collection, query, where } from "firebase/firestore";
 import { getFunctions, connectFunctionsEmulator, httpsCallable } from "firebase/functions";
 import assert from "node:assert/strict";
@@ -90,11 +90,18 @@ console.log("  ok: chores saved, webhook test delivered");
 const K = client("kid");
 const list = await K.call("listKidsForCode", { code });
 assert.deepEqual(list.kids.map(k => k.name).sort(), ["Ava", "Ben"]);
+// Kid sign-in: anonymous account first, then the PIN check turns it into the kid
+await rejects(K.call("kidLogin", { code, kidId: ava, pin: "1234" }), /pick your name/, "kidLogin needs an anonymous session");
+await rejects(P.call("kidLogin", { code, kidId: ava, pin: "1234" }), /pick your name/, "a parent account can't become a kid");
+await signInAnonymously(K.auth);
+assert.equal((await K.auth.currentUser.getIdTokenResult()).claims.role, undefined, "anonymous starts with no role");
+await denied(getDoc(doc(K.db, `families/${familyId}/kids/${ava}`)), "anonymous without PIN reads nothing");
+await rejects(K.call("createFamily", { name: "Sneaky" }), /parent/, "anonymous can't create a family");
 await rejects(K.call("kidLogin", { code, kidId: ava, pin: "0000" }), /Wrong PIN. 4 tries left/, "wrong PIN counted");
-const { token } = await K.call("kidLogin", { code, kidId: ava, pin: "1234" });
-await signInWithCustomToken(K.auth, token);
-const kc = (await K.auth.currentUser.getIdTokenResult()).claims;
-assert.equal(kc.role, "kid"); assert.equal(kc.kidId, ava);
+assert.deepEqual(await K.call("kidLogin", { code, kidId: ava, pin: "1234" }), { ok: true });
+const kc = (await K.auth.currentUser.getIdTokenResult(true)).claims;
+assert.equal(kc.role, "kid"); assert.equal(kc.kidId, ava); assert.equal(kc.familyId, familyId);
+console.log("  ok: kid sign-in via anonymous session + PIN, no token signing");
 
 // Rules
 assert.equal((await getDoc(doc(K.db, `families/${familyId}/kids/${ava}`))).data().name, "Ava");
